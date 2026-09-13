@@ -1,0 +1,65 @@
+{
+  "exported_at": "2026-09-12T22:31:20.038819",
+  "statistics": {
+    "total_chunks": 4,
+    "unique_sources": 2,
+    "sources": [
+      "/home/aspen/Ollama_Doc_Repo/documents/project_plan.md",
+      "/home/aspen/Ollama_Doc_Repo/documents/test_doc.txt"
+    ]
+  },
+  "documents": [
+    {
+      "source": "/home/aspen/Ollama_Doc_Repo/documents/test_doc.txt",
+      "filename": "test_doc.txt",
+      "chunks": [
+        {
+          "id": "/home/aspen/Ollama_Doc_Repo/documents/test_doc.txt#0",
+          "text": "# Ollama Document Repository Test Document\n\nThis is a test document for the Ollama Document Repository application.\n\n## Overview\n\nThe Ollama Document Repository is a local document processing and Q&A application powered by Ollama. It allows users to:\n\n1. Process PDFs, DOCX, Markdown, HTML, RTF, and text files\n2. Generate semantic embeddings for document chunks using nomic-embed-text\n3. Store embeddings in ChromaDB for fast semantic search\n4. Ask questions about the document collection using llama3.2\n5. Generate summaries of documents\n\n## Technical Details\n\nThe application uses the following components:\n- **Ollama** for local LLM inference (embeddings and chat)\n- **ChromaDB** for vector storage and semantic search\n- **Python** with Click for CLI interface\n- **Rich** for beautiful terminal output\n\n## Features\n\n- Multi-format document support\n- Semantic search with vector embeddings\n- Local processing - no data leaves your machine\n- Document summarization\n- Interactive Q&A sessions",
+          "metadata": {
+            "chunk_index": 0,
+            "filename": "test_doc.txt",
+            "source": "/home/aspen/Ollama_Doc_Repo/documents/test_doc.txt",
+            "total_chunks": 2
+          }
+        },
+        {
+          "id": "/home/aspen/Ollama_Doc_Repo/documents/test_doc.txt#1",
+          "text": "inal output\n\n## Features\n\n- Multi-format document support\n- Semantic search with vector embeddings\n- Local processing - no data leaves your machine\n- Document summarization\n- Interactive Q&A sessions\n- Command-line interface\n\n## Usage Example\n\n```bash\n# Ingest documents\n./ollama-docs ingest\n\n# Ask a question\n./ollama-docs ask \"What formats are supported?\"\n\n# Interactive mode\n./ollama-docs ask -i\n\n# Summarize a document\n./ollama-docs summarize\n```\n\nThis document serves as a test to verify the ingestion and Q&A functionality works correctly.",
+          "metadata": {
+            "total_chunks": 2,
+            "chunk_index": 1,
+            "source": "/home/aspen/Ollama_Doc_Repo/documents/test_doc.txt",
+            "filename": "test_doc.txt"
+          }
+        }
+      ]
+    },
+    {
+      "source": "/home/aspen/Ollama_Doc_Repo/documents/project_plan.md",
+      "filename": "project_plan.md",
+      "chunks": [
+        {
+          "id": "/home/aspen/Ollama_Doc_Repo/documents/project_plan.md#0",
+          "text": "# Project Plan: Ollama Document Repository\n\n## Overview\nBuild a local document processing application using Ollama for embeddings and chat.\n\n## Objectives\n1. Process multiple document formats locally\n2. Enable semantic search with vector embeddings\n3. Provide Q&A interface for document collections\n4. Support document summarization\n\n## Technical Stack\n- Ollama for local LLM inference\n- ChromaDB for vector storage\n- Python with Click for CLI\n- Rich for terminal UI\n\n## Milestones\n\n### Phase 1: Core Infrastructure\n- [x] Document processor for multiple formats (PDF, DOCX, TXT, MD, HTML, RTF)\n- [x] Vector store with ChromaDB integration\n- [x] Ollama integration for embeddings and chat\n- [x] Configuration management\n\n### Phase 2: CLI Interface\n- [x] Ingest command with progress tracking\n- [x] Ask command with source citations\n- [x] Interactive Q&A mode\n- [x] Summarize command\n- [x] List and stats commands\n- [x] Database management (clear, models)\n\n### Phase 3: Testing and Polish",
+          "metadata": {
+            "source": "/home/aspen/Ollama_Doc_Repo/documents/project_plan.md",
+            "total_chunks": 2,
+            "filename": "project_plan.md",
+            "chunk_index": 0
+          }
+        },
+        {
+          "id": "/home/aspen/Ollama_Doc_Repo/documents/project_plan.md#1",
+          "text": "ing\n- [x] Ask command with source citations\n- [x] Interactive Q&A mode\n- [x] Summarize command\n- [x] List and stats commands\n- [x] Database management (clear, models)\n\n### Phase 3: Testing and Polish\n- [ ] Add more document format tests\n- [ ] Optimize chunking strategy\n- [ ] Add search highlighting\n- [ ] Performance benchmarks\n\n## Key Features Implemented\n- Multi-format document ingestion\n- Semantic search with relevance scoring\n- Source attribution in answers\n- Interactive and single-question modes\n- Document summarization\n- Database statistics and management\n\n## Next Steps\n1. Add support for more file formats (CSV, XLSX)\n2. Implement hybrid search (keyword + semantic)\n3. Add document metadata extraction\n4. Create web interface option",
+          "metadata": {
+            "source": "/home/aspen/Ollama_Doc_Repo/documents/project_plan.md",
+            "chunk_index": 1,
+            "total_chunks": 2,
+            "filename": "project_plan.md"
+          }
+        }
+      ]
+    }
+  ]
+}

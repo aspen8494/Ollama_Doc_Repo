@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 import ollama
 from config import config
 
+
 class VectorStore:
     def __init__(self):
         self.client = chromadb.PersistentClient(
@@ -15,20 +16,31 @@ class VectorStore:
             metadata={"hnsw:space": "cosine"}
         )
         self.ollama_client = ollama.Client(host=config.ollama_host)
-    
+
+    def _get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+        """Get embeddings for multiple texts (individual requests for compatibility)."""
+        embeddings = []
+        for text in texts:
+            response = self.ollama_client.embeddings(
+                model=config.embedding_model,
+                prompt=text
+            )
+            embeddings.append(response['embedding'])
+        return embeddings
+
     def _get_embedding(self, text: str) -> List[float]:
-        """Get embedding from Ollama."""
+        """Get embedding from Ollama (single text)."""
         response = self.ollama_client.embeddings(
             model=config.embedding_model,
             prompt=text
         )
         return response['embedding']
-    
+
     def add_documents(self, documents: List[Dict[str, Any]]) -> None:
         """Add document chunks to the vector store."""
         if not documents:
             return
-        
+
         texts = [doc['text'] for doc in documents]
         metadatas = [
             {
@@ -40,31 +52,29 @@ class VectorStore:
             for doc in documents
         ]
         ids = [f"{doc['source']}#{doc['chunk_index']}" for doc in documents]
-        
-        # Generate embeddings
-        embeddings = []
-        for text in texts:
-            embeddings.append(self._get_embedding(text))
-        
+
+        # Generate embeddings in batch
+        embeddings = self._get_embeddings_batch(texts)
+
         self.collection.add(
             documents=texts,
             metadatas=metadatas,
             ids=ids,
             embeddings=embeddings
         )
-    
+
     def search(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
         """Search for relevant document chunks."""
         query_embedding = self._get_embedding(query)
-        
+
         results = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results
         )
-        
+
         if not results['documents'] or not results['documents'][0]:
             return []
-        
+
         return [
             {
                 'text': results['documents'][0][i],
@@ -73,7 +83,7 @@ class VectorStore:
             }
             for i in range(len(results['documents'][0]))
         ]
-    
+
     def get_all_sources(self) -> List[str]:
         """Get list of all unique source documents."""
         results = self.collection.get()
@@ -81,13 +91,13 @@ class VectorStore:
             return []
         sources = set(m['source'] for m in results['metadatas'])
         return sorted(sources)
-    
+
     def delete_source(self, source_path: str) -> None:
         """Delete all chunks from a specific source document."""
         results = self.collection.get(where={"source": source_path})
         if results['ids']:
             self.collection.delete(ids=results['ids'])
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """Get collection statistics."""
         results = self.collection.get()
@@ -100,7 +110,7 @@ class VectorStore:
             'unique_sources': len(sources),
             'sources': sorted(sources)
         }
-    
+
     def clear(self) -> None:
         """Clear all documents from the collection."""
         self.client.delete_collection(config.collection_name)
@@ -109,6 +119,7 @@ class VectorStore:
             metadata={"hnsw:space": "cosine"}
         )
 
+
 def main():
     store = VectorStore()
     stats = store.get_stats()
@@ -116,6 +127,7 @@ def main():
     print(f"Unique sources: {stats['unique_sources']}")
     for s in stats['sources']:
         print(f"  - {s}")
+
 
 if __name__ == '__main__':
     main()

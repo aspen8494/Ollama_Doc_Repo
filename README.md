@@ -9,19 +9,22 @@ A local document processing and Q&A application powered by Ollama. Process PDFs,
 - **Local processing**: Everything runs locally with Ollama - no data leaves your machine
 - **Summarization**: Generate summaries of any document in the repository
 - **Interactive Q&A**: Ask questions about your document collection
-- **CLI interface**: Simple command-line usage
+- **CLI interface**: Simple command-line usage with Rich terminal UI
+- **Export/Import**: Export documents and chunks to JSON
+- **Raw search**: Search documents without LLM answer generation
 
 ## Quick Start
 
 ```bash
-# Navigate to the project
-cd ~/Documents/Ollama_Doc_Repo
+# Clone the repository
+git clone https://github.com/aspen8494/Ollama_Doc_Repo.git
+cd Ollama_Doc_Repo
 
 # Run setup (installs dependencies, pulls models)
 python setup.py
 
 # Add documents to the documents folder
-cp /path/to/your/docs/* ~/Documents/Ollama_Doc_Repo/documents/
+cp /path/to/your/docs/* documents/
 
 # Ingest documents into the database
 ./ollama-docs ingest
@@ -45,6 +48,9 @@ cp /path/to/your/docs/* ~/Documents/Ollama_Doc_Repo/documents/
 
 # Ingest a specific file
 ./ollama-docs ingest -i /path/to/document.pdf
+
+# Custom batch size for embeddings
+./ollama-docs ingest -b 100
 ```
 
 ### `ask` - Query documents
@@ -64,14 +70,14 @@ cp /path/to/your/docs/* ~/Documents/Ollama_Doc_Repo/documents/
 
 ### `summarize` - Generate summaries
 ```bash
-# Summarize a specific document
-./ollama-docs summarize ~/Documents/Ollama_Doc_Repo/documents/report.pdf
-
 # List all documents
 ./ollama-docs summarize
+
+# Summarize a specific document
+./ollama-docs summarize documents/report.pdf
 ```
 
-### `list` - List all documents
+### `list` - List all documents with chunk counts
 ```bash
 ./ollama-docs list
 ```
@@ -91,6 +97,16 @@ cp /path/to/your/docs/* ~/Documents/Ollama_Doc_Repo/documents/
 ./ollama-docs models
 ```
 
+### `search` - Raw semantic search (no LLM answer)
+```bash
+./ollama-docs search "query terms" -n 10
+```
+
+### `export` - Export database to JSON
+```bash
+./ollama-docs export -o backup.json
+```
+
 ## Configuration
 
 Edit `src/config.py` to customize:
@@ -99,11 +115,16 @@ Edit `src/config.py` to customize:
 - `chat_model`: Model for Q&A (default: llama3.2)
 - `chunk_size`: Text chunk size (default: 1000)
 - `chunk_overlap`: Chunk overlap (default: 200)
+- `embedding_batch_size`: Batch size for embedding requests (default: 10)
+
+Paths are relative to the project root by default:
+- `chroma_path`: ./chroma_db
+- `documents_path`: ./documents
 
 ## Directory Structure
 
 ```
-~/Documents/Ollama_Doc_Repo/
+Ollama_Doc_Repo/
 ├── documents/          # Put your documents here
 ├── chroma_db/          # Vector database (auto-created)
 ├── src/
@@ -127,12 +148,12 @@ Edit `src/config.py` to customize:
 
 ```bash
 # 1. Setup
-cd ~/Documents/Ollama_Doc_Repo
+cd Ollama_Doc_Repo
 python setup.py
 
 # 2. Add documents
-cp ~/Downloads/*.pdf ~/Documents/Ollama_Doc_Repo/documents/
-cp ~/Projects/notes/*.md ~/Documents/Ollama_Doc_Repo/documents/
+cp ~/Downloads/*.pdf documents/
+cp ~/Projects/notes/*.md documents/
 
 # 3. Ingest
 ./ollama-docs ingest
@@ -143,7 +164,13 @@ cp ~/Projects/notes/*.md ~/Documents/Ollama_Doc_Repo/documents/
 
 # 5. Get document summaries
 ./ollama-docs summarize
-./ollama-docs summarize ~/Documents/Ollama_Doc_Repo/documents/important.pdf
+./ollama-docs summarize documents/important.pdf
+
+# 6. Search without LLM
+./ollama-docs search "specific term"
+
+# 7. Export for backup
+./ollama-docs export -o backup.json
 ```
 
 ## Troubleshooting
@@ -166,7 +193,14 @@ ollama pull llama3.2
 
 **Permission denied on ollama-docs:**
 ```bash
-chmod +x ~/Documents/Ollama_Doc_Repo/ollama-docs
+chmod +x ollama-docs
+```
+
+**Documents not found:**
+```bash
+# Check documents directory
+ls documents/
+# Make sure files have supported extensions: .pdf, .docx, .txt, .md, .html, .htm, .rtf
 ```
 
 ## License
