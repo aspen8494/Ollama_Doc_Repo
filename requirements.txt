@@ -8,3 +8,6 @@ striprtf>=0.0.24
 click>=8.1.0
 rich>=13.7.0
 tqdm>=4.66.0
+# Interactive terminal UI (launched when you run ./ollama-docs with no subcommand)
+textual>=0.70.0
+python-dotenv>=1.0.0

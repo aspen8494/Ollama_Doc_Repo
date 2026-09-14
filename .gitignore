@@ -4,10 +4,12 @@ __pycache__/
 *$py.class
 *.so
 .Python
+
+# Virtual environments
 venv/
 env/
 ENV/
-.venv
+.venv/
 
 # Distribution
 dist/
@@ -29,6 +31,9 @@ chroma_db/
 documents/
 *.log
 
-# Environment
+# Exported data
+ollama-docs-export.json
+
+# Environment (may contain host/credentials)
 .env
 .env.local

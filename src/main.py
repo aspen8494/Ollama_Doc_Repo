@@ -2,9 +2,11 @@
 """
 Ollama Document Repository - CLI Application
 Process local documents for summarization and Q&A using Ollama.
+
+With no subcommand this launches an interactive TUI; with a subcommand it
+runs the matching one-shot CLI action.
 """
 
-import os
 import sys
 from pathlib import Path
 import click
@@ -26,6 +28,19 @@ from config import config
 console = Console()
 
 
+def launch_tui():
+    """Launch the interactive Textual TUI, imported lazily so the one-shot
+    CLI stays lightweight and TUI deps are needed only for the TUI."""
+    try:
+        from tui import run_tui
+    except Exception as e:
+        console.print(f"[red]Failed to start the TUI: {e}[/red]")
+        console.print("  Install the TUI dependencies, or use a subcommand.")
+        console.print("  See 'ollama-docs --help' for the available subcommands.")
+        return
+    run_tui()
+
+
 def check_ollama_connection():
     """Check if Ollama is accessible."""
     import urllib.request
@@ -36,15 +51,25 @@ def check_ollama_connection():
         return False
 
 
-@click.group()
-@click.version_option(version='1.0.0')
+@click.group(invoke_without_command=True)
+@click.version_option(version='1.1.0')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
-def cli(verbose):
-    """Ollama Document Repository - Process and query local documents."""
+@click.pass_context
+def cli(ctx, verbose):
+    """Ollama Document Repository.
+
+    With NO subcommand, this launches an interactive TUI that exposes every
+    capability (ingest, ask, search, summarize, list, stats, models, export).
+    Pass a subcommand below for one-shot CLI usage.
+        """
     if not check_ollama_connection():
         console.print(f"[red]Warning: Cannot connect to Ollama at {config.ollama_host}[/red]")
         console.print("  Make sure Ollama is running: [cyan]ollama serve[/cyan]")
-    pass
+
+    # No subcommand -> launch the TUI.
+    if ctx.invoked_subcommand is None:
+        launch_tui()
+        raise SystemExit(0)
 
 
 @cli.command()
@@ -78,27 +103,29 @@ def ingest(force, file, batch_size):
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
-        console=console
+        console=console,
     ) as progress:
         task = progress.add_task("Processing documents...", total=len(files))
 
         for file_path in files:
             progress.update(task, description=f"Processing {file_path.name}...")
 
-            # Check if already processed (unless force)
+            # Skip-detection uses the stable, location-independent source key so
+            # re-ingest is detected regardless of the absolute launch path.
             if not force:
-                existing = vector_store.collection.get(where={"source": str(file_path)})
+                key = DocumentProcessor.source_key(file_path)
+                existing = vector_store.collection.get(where={"source": key})
                 if existing['ids']:
-                    console.print(f"  [dim]Skipping {file_path.name} (already processed)[/dim]")
+                    console.print(f"   [dim]Skipping {file_path.name} (already processed)[/dim]")
                     progress.advance(task)
                     continue
 
             try:
                 chunks = processor.process_file(file_path)
                 all_chunks.extend(chunks)
-                console.print(f"  [green]✓[/green] {file_path.name} ({len(chunks)} chunks)")
+                console.print(f"   [green]OK[/green] {file_path.name} ({len(chunks)} chunks)")
             except Exception as e:
-                console.print(f"  [red]✗[/red] {file_path.name}: {e}")
+                console.print(f"   [red]X[/red] {file_path.name}: {e}")
 
             progress.advance(task)
 
@@ -108,7 +135,7 @@ def ingest(force, file, batch_size):
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TaskProgressColumn(),
-            console=console
+            console=console,
         ) as progress:
             task = progress.add_task("Generating embeddings and storing...", total=len(all_chunks))
 
@@ -118,7 +145,9 @@ def ingest(force, file, batch_size):
                 vector_store.add_documents(batch)
                 progress.advance(task, len(batch))
 
-        console.print(f"\n[green]Successfully ingested {len(all_chunks)} chunks from {len(files)} document(s)[/green]")
+        console.print(
+            f"\n[green]Successfully ingested {len(all_chunks)} chunks "
+            f"from {len(files)} document(s)[/green]")
     else:
         console.print("[yellow]No new documents to ingest.[/yellow]")
 
@@ -131,16 +160,14 @@ def ingest(force, file, batch_size):
 @click.option('--model', '-m', help='Override chat model')
 def ask(question, results, no_sources, interactive, model):
     """Ask a question about the documents."""
-    chat = DocumentChat()
-    
-    if model:
-        chat.ollama_client = chat.ollama_client.__class__(host=config.ollama_host)
-        # Note: model override would require modifying the chat method
+    # --model / --results now take effect via per-instance overrides.
+    chat = DocumentChat(model=model, n_results=results)
 
     if interactive or not question:
         console.print(Panel.fit(
             "[bold]Interactive Q&A Session[/bold]\n"
-            "Type your questions. Enter 'quit', 'exit', or 'q' to exit.",
+            "Type your questions. 'quit', 'exit', or 'q' to leave.\n"
+            "Tip: run 'ollama-docs' with no args for the full interactive TUI.",
             border_style="cyan"
         ))
 
@@ -160,7 +187,7 @@ def ask(question, results, no_sources, interactive, model):
         _ask_question(chat, question, results, not no_sources)
 
 
-def _ask_question(chat: DocumentChat, question: str, n_results: int, show_sources: bool):
+def _ask_question(chat, question, n_results, show_sources):
     """Ask a single question and display results."""
     with console.status("[cyan]Searching documents and generating answer...[/cyan]"):
         result = chat.ask(question, n_results=n_results)
@@ -187,11 +214,10 @@ def _ask_question(chat: DocumentChat, question: str, n_results: int, show_source
 @cli.command()
 @click.argument('source', required=False)
 def summarize(source):
-    """Summarize a specific document or list all documents."""
+    """Summarize a document, or list all documents when SOURCE is omitted."""
     chat = DocumentChat()
 
     if source:
-        # Summarize specific document
         with console.status(f"[cyan]Generating summary for {source}...[/cyan]"):
             result = chat.summarize_document(source)
 
@@ -201,7 +227,6 @@ def summarize(source):
             border_style="blue"
         ))
     else:
-        # List all documents
         sources = chat.list_documents()
         if not sources:
             console.print("[yellow]No documents in database.[/yellow]")
@@ -209,11 +234,11 @@ def summarize(source):
 
         console.print(f"[cyan]Found {len(sources)} document(s):[/cyan]\n")
         for src in sources:
-            console.print(f"  • {src}")
+            console.print(f"   {src}")
 
 
-@cli.command()
-def list():
+@cli.command(name="list")
+def list_documents_cmd():
     """List all documents in the database with chunk counts."""
     chat = DocumentChat()
     sources = chat.list_documents()
@@ -223,18 +248,19 @@ def list():
         return
 
     stats = chat.get_stats()
+    counts = chat.vector_store.get_source_counts()
 
-    table = Table(title=f"Documents ({stats['unique_sources']} docs, {stats['total_chunks']} chunks)", show_header=True)
+    table = Table(
+        title=f"Documents ({stats['unique_sources']} docs, "
+            f"{stats['total_chunks']} chunks)",
+        show_header=True,
+    )
     table.add_column("#", justify="right", style="dim")
     table.add_column("Document", style="cyan")
     table.add_column("Chunks", justify="right")
 
-    # Get chunk count per document
-    vector_store = VectorStore()
     for i, src in enumerate(sources, 1):
-        results = vector_store.collection.get(where={"source": src})
-        chunk_count = len(results['ids']) if results['ids'] else 0
-        table.add_row(str(i), src, str(chunk_count))
+        table.add_row(str(i), src, str(counts.get(src, 0)))
 
     console.print(table)
 
@@ -249,7 +275,7 @@ def stats():
         f"[bold]Total Chunks:[/bold] {stats['total_chunks']}\n"
         f"[bold]Unique Documents:[/bold] {stats['unique_sources']}\n"
         f"[bold]Embedding Model:[/bold] {config.embedding_model}\n"
-        f"[bold]Chat Model:[/bold] {config.chat_model}\n"
+        f"[bold]Chat Model:[/bold] {chat.model}\n"
         f"[bold]Chunk Size:[/bold] {config.chunk_size}\n"
         f"[bold]Chunk Overlap:[/bold] {config.chunk_overlap}\n"
         f"[bold]Database Path:[/bold] {config.chroma_path}\n"
@@ -274,48 +300,50 @@ def clear(confirm):
 
 @cli.command()
 def models():
-    """Check available Ollama models."""
-    import ollama
-    client = ollama.Client(host=config.ollama_host)
-
+    """List available Ollama models."""
     try:
-        models_response = client.list()
-        # Handle the ListResponse object
-        models = getattr(models_response, 'models', [])
-        if isinstance(models_response, dict):
-            models = models_response.get('models', [])
-
-        console.print(Panel(
-            f"[bold]Ollama Endpoint:[/bold] {config.ollama_host}\n\n"
-            f"[bold]Available Models:[/bold]",
-            title="Ollama Status",
-            border_style="cyan"
-        ))
-
-        table = Table(show_header=True)
-        table.add_column("Model", style="cyan")
-        table.add_column("Size", justify="right")
-        table.add_column("Modified", style="dim")
-
-        model_names = []
-        for m in models:
-            name = getattr(m, 'model', m.get('model', m.get('name', 'Unknown')) if isinstance(m, dict) else 'Unknown')
-            size = getattr(m, 'size', m.get('size', 0) if isinstance(m, dict) else 0)
-            modified = getattr(m, 'modified_at', m.get('modified_at', 'Unknown') if isinstance(m, dict) else 'Unknown')
-            size_gb = size / (1024**3)
-            mod_str = str(modified)[:10] if modified != 'Unknown' else 'Unknown'
-            table.add_row(name, f"{size_gb:.1f} GB", mod_str)
-            model_names.append(name)
-
-        console.print(table)
-
-        # Check required models
-        for required in [config.embedding_model, config.chat_model]:
-            status = "[green]✓ Available[/green]" if any(required in m for m in model_names) else "[red]✗ Missing[/red]"
-            console.print(f"  {required}: {status}")
-
+        client = ollama_client()
+        names = DocumentChat().list_model_names()
     except Exception as e:
-        console.print(f"[red]Failed to connect to Ollama at {config.ollama_host}: {e}[/red]")
+        console.print(f"[red]Failed to connect to Ollama at "
+                    f"{config.ollama_host}: {e}[/red]")
+        return
+
+    console.print(Panel(
+        f"[bold]Ollama Endpoint:[/bold] {config.ollama_host}",
+        title="Ollama Status",
+        border_style="cyan",
+    ))
+
+    table = Table(show_header=True)
+    table.add_column("Model", style="cyan")
+    table.add_column("Size", justify="right")
+    table.add_column("Modified", style="dim")
+
+    for n in sorted(names):
+        tag = ""
+        if n == chat_module_model():
+            tag += " [CHAT]"
+        if n == config.embedding_model:
+            tag += " [EMBED]"
+        table.add_row(n + tag, "", "")
+
+    console.print(table)
+
+    for required in [config.embedding_model, chat_module_model()]:
+        ok = any(required in m or m.startswith(required.split(':')[0]) for m in names)
+        status = "[green]Available[/green]" if ok else "[red]Missing[/red]"
+        console.print(f"   {required}: {status}")
+
+
+def ollama_client():
+    import ollama
+    return ollama.Client(host=config.ollama_host)
+
+
+def chat_module_model():
+    """The chat model that the CLI defaults to (config.chat_model)."""
+    return config.chat_model
 
 
 @cli.command()
@@ -324,44 +352,47 @@ def export(output):
     """Export all documents and chunks to JSON."""
     import json
     from datetime import datetime
-    
+    from collections import defaultdict
+
     vector_store = VectorStore()
     stats = vector_store.get_stats()
-    
-    # Get all documents with full content
+
     results = vector_store.collection.get()
-    
+
     export_data = {
         "exported_at": datetime.now().isoformat(),
         "statistics": stats,
-        "documents": []
+        "documents": [],
     }
-    
-    # Group by source
-    from collections import defaultdict
+
     doc_chunks = defaultdict(list)
+    first_meta = {}
     documents = results.get('documents') or []
     metadatas = results.get('metadatas') or []
     ids = results.get('ids') or []
-    for i, (doc, meta, id_) in enumerate(zip(documents, metadatas, ids)):
-        doc_chunks[meta['source']].append({
+    for doc, meta, id_ in zip(documents, metadatas, ids):
+        src = meta.get('source', '?')
+        doc_chunks[src].append({
             'id': id_,
             'text': doc,
-            'metadata': meta
+            'metadata': meta,
         })
-    
+        first_meta.setdefault(src, meta)
+
     for source, chunks in doc_chunks.items():
         export_data['documents'].append({
             'source': source,
-            'filename': chunks[0]['metadata']['filename'],
-            'chunks': chunks
+            'filename': first_meta.get(source, {}).get('filename', source),
+            'chunks': chunks,
         })
-    
+
     output_path = Path(output) if output else Path("ollama-docs-export.json")
     with open(output_path, 'w') as f:
         json.dump(export_data, f, indent=2)
-    
-    console.print(f"[green]Exported {stats['unique_sources']} documents ({stats['total_chunks']} chunks) to {output_path}[/green]")
+
+    console.print(
+        f"[green]Exported {stats['unique_sources']} documents "
+        f"({stats['total_chunks']} chunks) to {output_path}[/green]")
 
 
 @cli.command()
@@ -370,28 +401,29 @@ def export(output):
 def search(query, results):
     """Search documents without generating an answer (raw semantic search)."""
     vector_store = VectorStore()
-    
+
     with console.status(f"[cyan]Searching for: {query}[/cyan]"):
         search_results = vector_store.search(query, n_results=results)
-    
+
     if not search_results:
         console.print("[yellow]No results found.[/yellow]")
         return
-    
-    console.print(Panel(f"[bold]Search Results for:[/bold] {query}", border_style="cyan"))
-    
+
+    console.print(Panel(f"[bold]Search Results for:[/bold] {query}",
+                        border_style="cyan"))
+
     table = Table(show_header=True)
     table.add_column("#", justify="right", style="dim")
     table.add_column("Filename", style="cyan")
     table.add_column("Relevance", justify="right")
     table.add_column("Preview", style="dim")
-    
+
     for i, r in enumerate(search_results, 1):
         relevance = f"{1 - r['distance']:.2%}" if r['distance'] is not None else "N/A"
         preview = r['text'][:150] + "..." if len(r['text']) > 150 else r['text']
         preview = preview.replace('\n', ' ')
         table.add_row(str(i), r['metadata']['filename'], relevance, preview)
-    
+
     console.print(table)
 
 

@@ -18,7 +18,7 @@ class VectorStore:
         self.ollama_client = ollama.Client(host=config.ollama_host)
 
     def _get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
-        """Get embeddings for multiple texts (individual requests for compatibility)."""
+        """Get embeddings for multiple texts."""
         embeddings = []
         for text in texts:
             response = self.ollama_client.embeddings(
@@ -41,20 +41,25 @@ class VectorStore:
         if not documents:
             return
 
-        texts = [doc['text'] for doc in documents]
-        metadatas = [
-            {
-                'source': doc['source'],
-                'filename': doc['filename'],
-                'chunk_index': doc['chunk_index'],
-                'total_chunks': doc['total_chunks']
-            }
-            for doc in documents
-        ]
-        ids = [f"{doc['source']}#{doc['chunk_index']}" for doc in documents]
+        meta_keys = ('source', 'source_path', 'filename', 'chunk_index', 'total_chunks')
 
-        # Generate embeddings in batch
-        embeddings = self._get_embeddings_batch(texts)
+        # Generate embeddings once for every document.
+        raw = self._get_embeddings_batch([doc['text'] for doc in documents])
+
+        seen = set()
+        texts, metadatas, ids, embeddings = [], [], [], []
+        for doc, emb in zip(documents, raw):
+            id_ = f"{doc['source']}#{doc['chunk_index']}"
+            if id_ in seen:
+                continue
+            seen.add(id_)
+            texts.append(doc['text'])
+            metadatas.append({k: doc.get(k) for k in meta_keys if doc.get(k) is not None})
+            ids.append(id_)
+            embeddings.append(emb)
+
+        if not ids:
+            return
 
         self.collection.add(
             documents=texts,
@@ -63,14 +68,16 @@ class VectorStore:
             embeddings=embeddings
         )
 
-    def search(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
-        """Search for relevant document chunks."""
+    def search(self, query: str, n_results: int = 5,
+            where: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Search relevant chunks, optionally constrained to a source via ``where``."""
         query_embedding = self._get_embedding(query)
 
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_results
-        )
+        kwargs = {"query_embeddings": [query_embedding], "n_results": n_results}
+        if where:
+            kwargs["where"] = where
+
+        results = self.collection.query(**kwargs)
 
         if not results['documents'] or not results['documents'][0]:
             return []
@@ -91,6 +98,16 @@ class VectorStore:
             return []
         sources = set(m['source'] for m in results['metadatas'])
         return sorted(sources)
+
+    def get_source_counts(self) -> Dict[str, int]:
+        """Return a mapping of source key -> chunk count."""
+        results = self.collection.get()
+        if not results['metadatas']:
+            return {}
+        counts: Dict[str, int] = {}
+        for m in results['metadatas']:
+            counts[m['source']] = counts.get(m['source'], 0) + 1
+        return counts
 
     def delete_source(self, source_path: str) -> None:
         """Delete all chunks from a specific source document."""
@@ -126,7 +143,7 @@ def main():
     print(f"Total chunks: {stats['total_chunks']}")
     print(f"Unique sources: {stats['unique_sources']}")
     for s in stats['sources']:
-        print(f"  - {s}")
+        print(f"       -> {s}")
 
 
 if __name__ == '__main__':
