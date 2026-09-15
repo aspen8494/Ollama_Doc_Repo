@@ -1,5 +1,6 @@
 import ollama
 from typing import List, Dict, Any, Optional
+
 from vector_store import VectorStore
 from document_processor import DocumentProcessor
 from config import config
@@ -32,90 +33,175 @@ def extract_answer(response: Dict[str, Any]) -> str:
     return candidates[-1] if candidates else ''
 
 
+# Thoroughness tiers control how aggressively we retrieve and how the prompt asks
+# for a complete answer. "quick" matches an old short-answer behaviour; "thorough"
+# is the default and retrieves more, asks for structure, and uses all the source
+# material the retrieval budget can carry.
+THOROUGH_SYSTEM = (
+    "You are a thorough research assistant. Answer the question COMPLETELY using "
+    "the provided document context. Cover every relevant point, not just the "
+    "first one. Organize the answer into clear sections or bullet points. "
+    "Draw on all of the supplied context, not only the most similar chunk. If "
+    "different documents add different facts, combine them. Only use "
+    "information from the context. If the context is missing something, say so "
+    "explicitly. When you cite a document, give enough detail to be useful."
+)
+QUICK_SYSTEM = (
+    "You are a helpful assistant that answers a question from the provided "
+    "document context. Answer concisely. Only use information from the "
+    "context. If the context does not contain enough information, say so."
+)
+
+
 class DocumentChat:
-    def __init__(self, model: Optional[str] = None, n_results: Optional[int] = None):
+    """Q&A / summarization over one database (ChromaDB collection).
+
+    Pass ``collection_name`` to target a specific database; otherwise the active
+    database (``config.collection_name``) is used, so switching databases in the
+    TUI/CLI redirects Q&A to the right one.
+    """
+
+    def __init__(self, model: Optional[str] = None,
+                n_results: Optional[int] = None,
+                collection_name: Optional[str] = None,
+                thorough: bool = True):
         self.ollama_client = ollama.Client(host=config.ollama_host)
-        self.vector_store = VectorStore()
-        # Per-instance overrides so --model / -n actually take effect.
+        self.vector_store = VectorStore(collection_name=collection_name)
+        self.collection_name = self.vector_store.collection_name
+        # Per-instance overrides. Default n_results now comes from config so the
+        # retrieval depth is generous (answers are thorough, not one-liners).
         self.model = model or config.chat_model
-        self.n_results = n_results or 5
+        self.n_results = n_results or config.n_results or 5
+        self.thorough = thorough
 
     def set_model(self, model: str) -> None:
         self.model = model
 
+    # ------------------------------------------------------------- internal
     def _generate(self, system_prompt: str, user_prompt: str,
-                temperature: float = 0.3, think: Optional[bool] = None) -> str:
+                temperature: float = 0.3, think: Optional[bool] = None,
+                num_predict: Optional[int] = None) -> str:
         kwargs = dict(
             model=self.model,
             messages=[
                 {'role': 'system', 'content': system_prompt},
                 {'role': 'user', 'content': user_prompt}],
-            options={'temperature': temperature})
+            options={'temperature': temperature},
+        )
         if think is not None:
-            # Let thinking models use their thinking field (or disable it).
             kwargs['options']['think'] = think
+        if num_predict:
+            # Let the model use more output tokens so it can write a full answer.
+            kwargs['options']['num_predict'] = 2048
         response = self.ollama_client.chat(**kwargs)
         return extract_answer(response)
 
+    def _build_context(self, results: List[Dict[str, Any]]):
+        """Assemble context from retrieved chunks and a per-source record list.
+
+        Keeps every chunk within the char budget but in retrieval order, and
+        returns which documents contributed material (for citations and for
+        telling the model how many sources it should cover).
+        """
+        parts: List[str] = []
+        sources: List[Dict[str, Any]] = []
+        total = 0
+
+        for r in results:
+            meta = r.get('metadata') or {}
+            text = (r.get('text') or '').strip()
+            if not text:
+                continue
+            fname = meta.get('filename') or meta.get('source') or '?'
+            cidx = meta.get('chunk_index')
+            tag = '[Source: ' + str(fname) + ' chunk ' + str(cidx) + ']\n'
+            chunk = tag + text
+            if total + len(chunk) > config.max_context_chars and parts:
+                # Budget exhausted: stop adding, but keep what we have.
+                break
+            total += len(chunk)
+            parts.append(chunk)
+            sources.append({
+                'filename': fname,
+                'source': meta.get('source'),
+                'chunk_index': meta.get('chunk_index'),
+                'distance': r.get('distance'),
+                'db': self.collection_name,
+                })
+        context = "\n\n---\n\n".join(parts)
+        return context, sources
+
+    # ------------------------------------------------------------- public API
     def ask(self, question: str, n_results: Optional[int] = None,
-            show_sources: bool = True) -> Dict[str, Any]:
-        """Ask a question about the documents."""
+            show_sources: bool = True, thorough: Optional[bool] = None) -> Dict[str, Any]:
+        """Ask a question about the documents in this database."""
         n = n_results or self.n_results
+        thorough_mode = thorough if thorough is not None else self.thorough
+
         results = self.vector_store.search(question, n_results=n)
 
         if not results:
             return {
-                'answer': "I couldn't find any relevant information in the documents to answer your question.",
+                'answer': ("I couldn't find any relevant information in the "
+                            f"database '{self.collection_name}' to answer your "
+                            "question. Try a different question, or check that "
+                            "documents are indexed (run /ingest)."),
                 'sources': [],
-                'context_used': False}
+                'context_used': False,
+                'truncated': False,
+                'db': self.collection_name,
+            }
 
-        context_parts = []
-        sources = []
-        for r in results:
-            context_parts.append(f"[Source: {r['metadata']['filename']}]\n{r['text']}")
-            sources.append({
-                'filename': r['metadata']['filename'],
-                'source': r['metadata']['source'],
-                'chunk_index': r['metadata']['chunk_index'],
-                'distance': r['distance']})
+        context, sources = self._build_context(results)
 
-        context = "\n\n---\n\n".join(context_parts)
+        n_docs = len({(s['source'] or s['filename']) for s in sources})
+        system_prompt = THOROUGH_SYSTEM if thorough_mode else QUICK_SYSTEM
 
-        # Cap context to avoid blowing the model's context window.
-        if len(context) > config.max_context_chars:
-            context = context[:config.max_context_chars] + "\n... [context truncated]"
-
-        system_prompt = (
-            "You are a helpful assistant that answers questions based on the provided "
-            "document context. Only use information from the context to answer. If the "
-            "context doesn't contain enough information, say so. Be concise but thorough. "
-            "Cite sources by referencing the filename in your answer.")
-
-        user_prompt = (f"Context from documents:\n{context}\n\n"
-                    f"Question: {question}\n\nAnswer based only on the context above:")
+        head = (
+            f"Context from {n_docs} document(s) in database "
+            f"'{self.collection_name}' "
+            f"({len(sources)} chunk(s)):")
+        user_prompt = (
+            f"{head}\n\n{context}\n\n"
+            f"Question: {question}\n\n"
+            + ("Answer completely, using material from all of the source "
+                "documents above where relevant:\n" if thorough_mode else
+                "Answer based on the context above:\n"))
 
         answer = self._generate(system_prompt, user_prompt)
         if not answer:
             answer = ("I couldn't generate an answer from the retrieved context. "
-                    "Try a more specific question.")
+                        "Try a more specific question, or increase the number of "
+                        "retrieved chunks.")
 
-        return {'answer': answer, 'sources': sources, 'context_used': True}
+        truncated = len(context) >= config.max_context_chars
+        return {
+            'answer': answer,
+            'sources': sources,
+            'context_used': True,
+            'truncated': truncated,
+            'db': self.collection_name,
+            'n_chunks': len(sources),
+            'n_docs': n_docs,
+            'thorough': thorough_mode,
+        }
 
-    def summarize_document(self, source_path: str) -> Dict[str, Any]:
-        """Generate a summary of a specific document.
+    def summarize_document(self, source_path: str,
+                            collection_name: Optional[str] = None) -> Dict[str, Any]:
+        """Generate a thorough summary of one document in one database.
 
-        source_path may be a relative path, a basename, or the stored 'source'
-        key; it is resolved to the stored key first.
+        ``source_path`` may be a relative path, a basename, or the stored
+        'source' key; it is resolved to the stored key first.
         """
+        col = collection_name or self.collection_name
         key = DocumentProcessor.match_source(source_path)
-        results = self.vector_store.collection.get(where={"source": key})
-
+        col_obj = self.vector_store._col(col)
+        results = col_obj.get(where={"source": key})
         if not results.get('documents'):
-            # Fall back to the raw query (in case it was already a key).
-            results = self.vector_store.collection.get(where={"source": source_path})
+            results = col_obj.get(where={"source": source_path})
         if not results.get('documents'):
-            return {'summary': "Document not found in the database.",
-                    'source': source_path}
+            return {'summary': f"Document not found in database '{col}'.",
+                    'source': source_path, 'db': col}
 
         docs = results['documents'] or []
         metas = results['metadatas'] or []
@@ -124,22 +210,23 @@ class DocumentChat:
 
         full_text = "\n\n".join(text for _, text in paired if text)
 
-        # Truncate if too long (leave room for prompt).
+        truncated = False
         if len(full_text) > config.max_context_chars:
             full_text = full_text[:config.max_context_chars] + " ... [truncated]"
+            truncated = True
 
         summary = self._generate(
-            "You are a helpful assistant that creates concise summaries of documents. "
-            "Provide a clear, structured summary covering the main points.",
-            f'Summarize this document:\n\n{full_text}')
-        return {'summary': summary, 'source': key}
+            "You are a helpful assistant that creates thorough, well-structured "
+            "summaries. Cover all the main points and important details; use "
+            "headings or bullet points when helpful.",
+            f'Summarize this document completely:\n\n{full_text}')
+        return {'summary': summary, 'source': key, 'db': col,
+                'truncated': truncated}
 
-    def list_documents(self) -> List[str]:
-        """List all documents in the database."""
+    def list_documents(self, collection_name: Optional[str] = None) -> List[str]:
         return self.vector_store.get_all_sources()
 
     def list_model_names(self) -> List[str]:
-        """List available Ollama model names on the configured endpoint."""
         resp = self.ollama_client.list()
         models = getattr(resp, 'models', None)
         if models is None and isinstance(resp, dict):
@@ -153,14 +240,15 @@ class DocumentChat:
         return [n for n in names if n]
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get database statistics."""
         return self.vector_store.get_stats()
 
 
 def main():
     chat = DocumentChat()
     stats = chat.get_stats()
-    print(f"Database: {stats['total_chunks']} chunks from {stats['unique_sources']} documents")
+    print(f"Database '{stats['collection']}': "
+        f"{stats['total_chunks']} chunks from "
+        f"{stats['unique_sources']} documents")
 
     while True:
         try:
@@ -177,7 +265,9 @@ def main():
         if result['sources']:
             print("\nSources:")
             for s in result['sources']:
-                print(f"       - {s['filename']} (chunk {s['chunk_index']}, distant: {s['distance']:.4f})")
+                print(f"          - {s['filename']} "
+                        f"({s.get('db', '')}) chunk {s['chunk_index']} "
+                        f"(distance: {s['distance']:.4f})")
 
 
 if __name__ == '__main__':

@@ -9,14 +9,23 @@ terminal UI**.
 
 - **Interactive TUI** — run `./ollama-docs` with no subcommand for a full-screen
   terminal interface: type questions, index documents, pick a document to
-  summarize, switch models, and more, with a live document panel and command log.
+  summarize, switch models, and more, with a live database/document panel and
+  command log.
+- **Multi-database support** — keep several collections side by side (e.g. one for
+  manuals, one for music articles) in a single vector store. View, create,
+  rename, delete, and **select which database is active** for queries.
+- **Per-document management** — add documents to a database without wiping it,
+  **remove a single document** from a database, and **move/copy a document
+  between databases** (no re-embedding).
+- **Thorough Q&A** — answers retrieve more context and are structured across
+  multiple source chunks by default (override with `--quick` for concise replies).
 - **Multi-format support**: PDF, DOCX, TXT, MD, HTML, RTF
 - **Semantic search**: vector embeddings via ChromaDB for relevant document retrieval
 - **Local processing**: everything runs against your Ollama instance — no data leaves your network
 - **Summarization**: generate summaries of any document in the repository
 - **Interactive Q&A**: ask questions about your document collection, with source citations
 - **CLI subcommands**: every capability is also available as a one-shot CLI command
-- **Export/Import**: export documents and chunks to JSON
+- **Export/Import**: export any database and chunks to JSON
 - **Raw search**: search documents without LLM answer generation
 - **Configurable endpoint & models** via `.env` or environment variables, no code edits
 
@@ -64,19 +73,28 @@ All Ollama work runs in background worker threads, so the UI stays responsive.
 | `/search <query>` | Raw semantic search (no LLM answer) |
 | `/ask <question>` | Generate a cited LLM answer |
 | `/summarize <document>` | Summarize one document |
-| `/list` | List indexed documents with chunk counts |
-| `/stats` | Database statistics |
+| `/list` | List documents in the active database with chunk counts |
+| `/stats` | Statistics for the active database |
 | `/models [name]` | List Ollama models; optionally set the chat model |
 | `/embedding-model <name>` | Choose the embedding model |
 | `/results <n>` | Set chunks retrieved per question |
-| `/export [path.json]` | Export the database to JSON |
-| `/clear` then `/clear-force` | Preview, then wipe the database |
+| `/export [path.json]` | Export the active database to JSON |
+| `/clear-force` | Wipe the active database |
+| **Databases** ||
+| `/db` | List all databases and show the active one |
+| `/db new <name>` | Create a new, empty database |
+| `/db use <name>` | Make a database the active one (also `/use <name>`) |
+| `/db delete <name>` | Delete a whole database |
+| `/db rename <old> <new>` | Rename a database |
+| `/remove <document>` | Remove one document from the active database |
+| `/reassign <src> <dst>` | **Move** a document from its source database to a destination database |
+| `/reassign <src> <dst> copy` | **Copy** a document to a destination database (keep original) |
 | `/help` | Show the command list |
 | `/quit` | Exit |
 
 ### Keybindings
 
-`i` ingest · `s` search · `a` ask · `l` list · `m` models · `?` help · `q` quit
+`i` ingest · `s` search · `a` ask · `l` list · `m` models · `d` switch database · `?` help · `q` quit
 
 ## CLI Subcommands
 
@@ -84,19 +102,51 @@ Every TUI capability is also a one-shot command.
 
 ### `ingest` — Process documents
 ```bash
-./ollama-docs ingest                 # ingest all docs in the folder
-./ollama-docs ingest --force         # force reprocess (clears the DB first)
-./ollama-docs ingest -i /path/to/document.pdf
-./ollama-docs ingest -b 100          # custom embedding batch size
+./ollama-docs ingest                   # ingest all docs in the folder
+./ollama-docs ingest --force           # clear only THIS database first, then re-ingest
+./ollama-docs ingest -i /path/document.pdf    # one specific file
+./ollama-docs --db music ingest                        # ingest into the 'music' db
+./ollama-docs --db manuals ingest -i docs/saw.md       # add one file to 'manuals'
+```
+
+> `ingest` **adds** to the target database without touching existing data.
+> `--force` clears only that one database, not all of them.
+
+### Databases — create, select, rename, delete
+The active database is remembered between runs (`.ollama-docs-state.json`).
+Target a specific one on any command with `--db <name>`, or make it default:
+
+```bash
+./ollama-docs db new manuals          # create an empty database
+./ollama-docs db new music            # e.g. a separate collection
+./ollama-docs db list                 # list databases, active one, and counts
+./ollama-docs db use manuals          # make 'manuals' the active database
+./ollama-docs --db music ask "..."    # or target one per-command
+./ollama-docs db rename music musicdb # rename, data preserved
+./ollama-docs db delete music         # drop it
+```
+
+### `reassign` / `remove` — per-document management
+```bash
+# Move one document between databases (no re-embedding):
+./ollama-docs reassign docs/saw.md music   # move from active db into 'music'
+
+# Copy instead of move:
+./ollama-docs reassign docs/saw.md music --copy
+
+# Remove one document without wiping the whole database:
+./ollama-docs remove docs/saw.md --from music
 ```
 
 ### `ask` — Query documents
 ```bash
 ./ollama-docs ask "What are the main topics?"
-./ollama-docs ask -n 10 "Detailed question"     # retrieve 10 chunks
+./ollama-docs ask -n 10 "Detailed question"      # retrieve 10 chunks
+./ollama-docs ask --quick "Quick question"       # concise single-point answer
 ./ollama-docs ask --no-sources "Quick question" # hide citations
-./ollama-docs ask -i                         # interactive prompt-based session
-./ollama-docs ask -m qwen3:8b "question"      # override the chat model
+./ollama-docs ask -i                          # interactive prompt-based session
+./ollama-docs ask -m qwen3:8b "question"       # override the chat model
+./ollama-docs --db music ask "What tracks are mentioned?"  # query one database
 ```
 
 ### `summarize` — Generate summaries
@@ -105,19 +155,21 @@ Every TUI capability is also a one-shot command.
 ./ollama-docs summarize documents/report.pdf
 ```
 
-### `list` — List all documents with chunk counts
+### `list` — List documents in the active database
 ```bash
-./ollama-docs list
+./ollama-docs list                  # active database
+./ollama-docs --db music list       # a specific database
 ```
 
 ### `stats` — Database statistics
 ```bash
-./ollama-docs stats
+./ollama-docs stats            # active database + list of all databases
+./ollama-docs db stats music   # a specific database
 ```
 
-### `clear` — Clear database
+### `clear` — Clear a database
 ```bash
-./ollama-docs clear --confirm
+./ollama-docs --db music clear --confirm   # deletes only 'music'; others kept
 ```
 
 ### `models` — Check Ollama models
@@ -130,9 +182,10 @@ Every TUI capability is also a one-shot command.
 ./ollama-docs search "query terms" -n 10
 ```
 
-### `export` — Export database to JSON
+### `export` — Export a database to JSON
 ```bash
-./ollama-docs export -o backup.json
+./ollama-docs export -o backup.json          # active database
+./ollama-docs --db music export -o b.json    # a specific database
 ```
 
 ## Configuration
@@ -149,32 +202,39 @@ All settings live in `src/config.py` and can be overridden by
 | `CHUNK_SIZE` | `1000` | Characters per text chunk |
 | `CHUNK_OVERLAP` | `200` | Overlap between adjacent chunks |
 | `EMBEDDING_BATCH_SIZE` | `10` | Embeddings requested per batch |
-| `MAX_CONTEXT_CHARS` | `12000` | Max context characters per question |
+| `N_RESULTS` | `8` | Default chunks retrieved per question |
+| `MAX_CONTEXT_CHARS` | `24000` | Max context characters per question |
 | `DOCUMENTS_PATH` | `documents/` | Folder to ingest from |
 | `CHROMA_PATH` | `chroma_db/` | Vector database location |
+| `COLLECTION_NAME` | `documents` | Initial/active database name on first run |
+| `DB_STATE_FILE` | `.ollama-docs-state.json` | Remembers the active database |
 
 > Defaults point at the local-network Ollama instance at
 > `192.168.68.59:11435` and use already-present models
 > (`nomic-embed-text` for embeddings, `gemma3:4b` for chat). Point
 > `OLLAMA_HOST` elsewhere — e.g. `http://localhost:11435` — to use a local Ollama.
+>
+> `N_RESULTS` and `MAX_CONTEXT_CHARS` control answer thoroughness: raise them for
+> more comprehensive answers, or use `--quick` for a fast one-point reply.
 
 ## Directory Structure
 
 ```
 Ollama_Doc_Repo/
-├── documents/              # Put your documents here
-├── chroma_db/              # Vector database (auto-created)
+├── documents/                  # Put your documents here
+├── chroma_db/                  # Vector store (holds every database/collection)
+├── .ollama-docs-state.json     # Remembers the active database (auto-created)
 ├── src/
-│   ├── main.py             # CLI entry point + TUI launcher (no subcommand -> TUI)
-│   ├── config.py           # Configuration (env / .env overridable)
-│   ├── document_processor.py   # Document parsing & chunking
-│   ├── vector_store.py         # ChromaDB operations
-│   ├── chat.py               # Q&A / summarization logic
-│   └── tui.py              # Interactive Textual TUI
-├── setup.py                # Setup script
-├── requirements.txt        # Python dependencies
-├── .env.example            # Copy to .env to configure the endpoint/models
-└── ollama-docs             # Launcher script
+│    ├── main.py               # CLI entry point + TUI launcher (no subcommand -> TUI)
+│    ├── config.py             # Configuration (env / .env overridable)
+│    ├── document_processor.py # Document parsing & chunking
+│    ├── vector_store.py       # ChromaDB operations + multi-database manager
+│    ├── chat.py               # Q&A / summarization logic
+│    └── tui.py                # Interactive Textual TUI
+├── setup.py                    # Setup script
+├── requirements.txt            # Python dependencies
+├── .env.example                # Copy to .env to configure the endpoint/models
+└── ollama-docs                 # Launcher script
 ```
 
 ## Requirements
@@ -190,24 +250,30 @@ Ollama_Doc_Repo/
 cd Ollama_Doc_Repo
 OLLAMA_HOST=http://192.168.68.59:11435 python setup.py
 
-# 2. Add documents
-cp ~/Downloads/*.pdf documents/
-cp ~/Projects/notes/*.md documents/
+# 2. Create two databases: one for manuals, one for music articles
+./ollama-docs db new manuals
+./ollama-docs db new music
 
-# 3. Launch the TUI and ingest
-./ollama-docs            # then type /ingest
+# 3. Add documents to the right database
+./ollama-docs --db manuals ingest -i docs/car_manual.pdf
+./ollama-docs --db music  ingest -i docs/great_jazz_2000s.pdf
 
-# 4. Ask a question right in the TUI, or from the shell
-./ollama-docs ask "Summarize the key findings"
+# 4. Make one the active database (persisted), or just target it per-command
+./ollama-docs db use manuals
+./ollama-docs ask "What should I do if the engine overheats?"
 
-# 5. Get a document summary
-./ollama-docs summarize documents/important.pdf
+# 5. Switch to the other database and ask about it
+./ollama-docs db use music
+./ollama-docs ask "Which jazz record should I buy?"
 
-# 6. Search without an LLM answer
-./ollama-docs search "specific term"
+# 6. Move a document between databases without re-embedding
+./ollama-docs reassign docs/shared_notes.pdf manuals --from music
 
-# 7. Export for backup
-./ollama-docs export -o backup.json
+# 7. Remove a single document without wiping the database
+./ollama-docs remove docs/old_manual.pdf --from manuals
+
+# 8. Export a database for backup
+./ollama-docs --db manuals export -o manuals_backup.json
 ```
 
 ## Troubleshooting

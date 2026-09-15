@@ -37,3 +37,4 @@ ollama-docs-export.json
 # Environment (may contain host/credentials)
 .env
 .env.local
+.ollama-docs-state.json

@@ -53,12 +53,25 @@ class Config:
     # --- Chunking ------------------------------------------------------------
     chunk_size: int = int(_env("CHUNK_SIZE", "1000"))
     chunk_overlap: int = int(_env("CHUNK_OVERLAP", "200"))
+     # A "database" is a ChromaDB collection in the one store at chroma_path;
+     # multiple databases => multiple collections that coexist, so switching or
+     # adding one never wipes another. "documents" is the default active one.
     collection_name: str = _env("COLLECTION_NAME", "documents")
+
+    # The "active" database is remembered across runs so switching it in the
+    # TUI/CLI persists. State lives in this file, never in the vector store.
+    state_file: str = field(default_factory=lambda: _env(
+        "DB_STATE_FILE", str(Path(__file__).parent.parent / ".ollama-docs-state.json")))
+
     # Batch size for embedding generation.
     embedding_batch_size: int = int(_env("EMBEDDING_BATCH_SIZE", "10"))
 
+    # How many chunks to retrieve per question, and how much of the retrieved
+    # context to hand the model. Larger defaults make answers more thorough.
+    # Override per-question with /results or --results in the CLI/TUI.
+    n_results: int = int(_env("N_RESULTS", "8"))
     # Maximum characters of context to feed the chat model on a single question.
-    max_context_chars: int = int(_env("MAX_CONTEXT_CHARS", "12000"))
+    max_context_chars: int = int(_env("MAX_CONTEXT_CHARS", "24000"))
 
     def __post_init__(self) -> None:
         # Normalize the host so trailing slashes don't break URL joins.
